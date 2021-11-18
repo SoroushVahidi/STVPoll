@@ -1,104 +1,106 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-
 from decimal import Decimal
 from itertools import combinations
 from math import factorial
 
-from typing import Iterable
-from typing import List
+from typing import Iterable, DefaultDict
 
-from stvpoll import Candidate
-from stvpoll import ElectionRound
-from stvpoll import STVPollBase
+from stvpoll.abcs import STVPoll
 from stvpoll.quotas import hagenbach_bischof_quota
+from stvpoll.utils import Proposal, SelectionMethod
 
 
-class CPOComparisonPoll(STVPollBase):
-
-    def __init__(self, seats, candidates, quota=hagenbach_bischof_quota, winners=(), compared=()):
-        super(CPOComparisonPoll, self).__init__(seats, [c.obj for c in candidates], quota)
-        self.compared = [self.get_existing_candidate(c.obj) for c in compared]
-        self.winners = [self.get_existing_candidate(c.obj) for c in winners]
+class CPOComparisonPoll(STVPoll):
+    def __init__(self,
+                 *args,
+                 winners=(),
+                 compared=(),
+                 **kwargs
+                 ) -> None:
+        kwargs.setdefault('quota', hagenbach_bischof_quota)
+        super().__init__(*args, **kwargs)
+        self.compared = compared
+        self.winners = winners
         self.below_quota = False
 
-    def do_rounds(self):
-        # type: () -> None
-        for exclude in set(self.standing_candidates).difference(self.winners):
-            self.select(exclude, ElectionRound.SELECTION_METHOD_DIRECT, Candidate.EXCLUDED)
-            self.transfer_votes(exclude)
+    def get_transfer_quota(self, proposal: Proposal) -> Decimal:
+        votes = self.get_votes(proposal)
+        return (votes - self.quota) / votes
 
-        for transfer in set(self.standing_candidates).difference(self.compared):
-            self.select(transfer, ElectionRound.SELECTION_METHOD_DIRECT)
-            self.transfer_votes(transfer, transfer_quota=(Decimal(transfer.votes) - self.quota) / transfer.votes)
-            transfer.votes = self.quota
+    def do_rounds(self) -> None:
+        for exclude in set(self.standing_proposals).difference(self.winners):
+            self.exclude(exclude, SelectionMethod.Direct)
+            self.transfer_votes({exclude: Decimal(1)})
+
+        elect = list(set(self.standing_proposals).difference(self.compared))
+        self.elect_multiple(elect, SelectionMethod.Direct)
+        self.transfer_votes({p: self.get_transfer_quota(p) for p in elect})
+        for p in elect:
+            self.votes[p] = Decimal(self.quota)
+
+    def calculate_round(self) -> None:
+        """ Not in use here """
 
     @property
-    def not_excluded(self):
-        # type: () -> List[Candidate]
-        return [c for c in self.candidates if c.status != Candidate.EXCLUDED]
+    def not_excluded(self) -> list[Proposal]:
+        return [p for p in self.proposals if p not in self.excluded]
 
-    def total_except(self, candidates):
-        # type: (List[Candidate]) -> Decimal
-        return sum(c.votes for c in self.not_excluded if c not in candidates)
+    def total_except(self, proposals: list[Proposal]) -> Decimal:
+        return sum(self.get_votes(p) for p in self.not_excluded if p not in proposals)
 
 
 class CPOComparisonResult:
-    def __init__(self, poll, compared):
-        # type: (CPOComparisonPoll, List[List[Candidate]]) -> None
+    def __init__(self, poll: CPOComparisonPoll, compared: tuple[list[Proposal], list[Proposal]]) -> None:
         self.poll = poll
         self.compared = compared
         self.all = set(compared[0] + compared[1])
-        self.totals = sorted((
+        self.totals: list[tuple[list[Proposal], Decimal]] = sorted([
             (compared[0], self.total(compared[0])),
             (compared[1], self.total(compared[1])),
-        ), key=lambda c: c[1])
+        ], key=lambda c: c[1])
         # May be unclear here, but winner or looser does not matter if tied
-        self.loser, self.winner = [c[0] for c in self.totals]
+        self.loser = self.totals[0][0]
+        self.winner = self.totals[1][0]
         self.difference = self.totals[1][1] - self.totals[0][1]
         self.tied = self.difference == 0
 
-    def others(self, combination):
-        # type: (List[Candidate]) -> Iterable[Candidate]
+    def others(self, combination: list[Proposal]) -> Iterable[Proposal]:
         return self.all.difference(combination)
 
-    def total(self, combination):
-        # type: (List[Candidate]) -> Decimal
+    def total(self, combination: list[Proposal]) -> Decimal:
         return self.poll.total_except(list(self.others(combination)))
 
 
-class CPO_STV(STVPollBase):
-
-    def __init__(self, quota=hagenbach_bischof_quota, *args, **kwargs):
+class CPO_STV(STVPoll):
+    def __init__(self,
+                 *args, **kwargs
+                 ) -> None:
+        kwargs.setdefault('quota', hagenbach_bischof_quota)
         kwargs['pedantic_order'] = False
-        super(CPO_STV, self).__init__(*args, quota=quota, **kwargs)
+        super().__init__(*args, **kwargs)
 
     @staticmethod
-    def possible_combinations(proposals, winners):
-        # type: (int, int) -> int
-        return factorial(proposals) / factorial(winners) / factorial(proposals - winners)
+    def possible_combinations(proposals: int, winners: int) -> int:
+        return factorial(proposals) // factorial(winners) // factorial(proposals - winners)
 
-    def get_best_approval(self):
-        # type: () -> List[Candidate]
-
+    def get_best_approval(self) -> list[Proposal]:
         # If no more seats to fill, there will be no duels. Return empty list.
         if self.seats_to_fill == 0:
             return []
 
         duels = []
-        possible_outcomes = list(combinations(self.standing_candidates, self.seats_to_fill))
+        possible_outcomes = list(combinations(self.standing_proposals, self.seats_to_fill))
         for combination in combinations(possible_outcomes, 2):
             compared = set([c for sublist in combination for c in sublist])
             winners = set(compared)
             winners.update(self.result.elected)
             comparison_poll = CPOComparisonPoll(
                 self.seats,
-                self.candidates,
+                self.proposals,
                 winners=winners,
                 compared=compared)
 
             for ballot in self.ballots:
-                comparison_poll.add_ballot([c.obj for c in ballot.preferences], ballot.count)
+                comparison_poll.add_ballot(ballot.preferences, ballot.count)
 
             comparison_poll.calculate()
             duels.append(CPOComparisonResult(
@@ -110,8 +112,7 @@ class CPO_STV(STVPollBase):
         # ... Ranked Pairs (so slow)
         # return self.get_duels_winner(duels) or self.resolve_tie_ranked_pairs(duels)
 
-    def get_duels_winner(self, duels):
-        # type: (List[CPOComparisonResult]) -> List[Candidate]
+    def get_duels_winner(self, duels: list[CPOComparisonResult]) -> list[Proposal]:
         wins = set()
         losses = set()
         for duel in duels:
@@ -128,25 +129,25 @@ class CPO_STV(STVPollBase):
         # No clear winner
         return []
 
-    def resolve_tie_minimax(self, duels):
-        # type: (List[CPOComparisonResult]) -> List[Candidate]
+    def resolve_tie_minimax(self, duels: list[CPOComparisonResult]) -> tuple[Proposal]:
         from tarjan import tarjan
-        graph = {}
+        graph = DefaultDict[list[Proposal], list[list[Proposal]]](list)
         for d in duels:
-            graph.setdefault(d.loser, []).append(d.winner)
-            if d.tied:
-                graph.setdefault(d.winner, []).append(d.loser)
-        smith_set = tarjan(graph)[0]
+            graph[d.loser].append(d.winner)
+            if d.tied:                            # Ties go both ways
+                graph[d.winner].append(d.loser)
+        smith_set: list[tuple[Proposal]] = tarjan(graph)[0]
 
-        biggest_defeats = {}
-        for candidates in smith_set:
-            ds = filter(lambda d: d.loser == candidates or (d.tied and d.winner == candidates), duels)
-            biggest_defeats[candidates] = max(d.difference for d in ds)
+        biggest_defeats: dict[tuple[Proposal], Decimal] = {}
+        for proposals in smith_set:
+            # Get CPOComparisonResults where proposals loses or ties
+            ds = filter(lambda d: d.loser == proposals or (d.tied and d.winner == proposals), duels)
+            biggest_defeats[proposals] = max(d.difference for d in ds)
         minimal_defeat = min(biggest_defeats.values())
-        equals = [defeat[0] for defeat in biggest_defeats.items() if defeat[1] == minimal_defeat]
-        if len(equals) > 1:
-            return self.choice(equals)
-        return equals[0]  # pragma: no cover
+        ties = [props for props, diff in biggest_defeats.items() if diff == minimal_defeat]
+        if len(ties) > 1:
+            return self.choice(ties)
+        return ties[0]  # pragma: no cover
 
     # def resolve_tie_ranked_pairs(self, duels):
     #     # type: (List[CPOComparisonResult]) -> List[Candidate]
@@ -194,19 +195,20 @@ class CPO_STV(STVPollBase):
     #
     #     return self.get_duels_winner(noncircular_duels)
 
-    def do_rounds(self):
-        # type: () -> None
-
-        if len(self.candidates) == self.seats:
-            self.select_multiple(
-                self.candidates,
-                ElectionRound.SELECTION_METHOD_DIRECT)
+    def do_rounds(self) -> None:
+        if len(self.proposals) == self.seats:
+            self.elect_multiple(
+                self.proposals,
+                SelectionMethod.Direct)
             return
 
-        self.select_multiple(
-            [c for c in self.candidates if c.votes > self.quota],
-            ElectionRound.SELECTION_METHOD_DIRECT)
+        self.elect_multiple(
+            [p for p in self.proposals if self.get_votes(p) > self.quota],
+            SelectionMethod.Direct)
 
-        self.select_multiple(
-            list(self.get_best_approval()),
-            ElectionRound.SELECTION_METHOD_CPO)
+        self.elect_multiple(
+            self.get_best_approval(),
+            SelectionMethod.CPO)
+
+    def calculate_round(self) -> None:
+        """ Not in use here """

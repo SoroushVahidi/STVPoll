@@ -1,12 +1,9 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-
 import unittest
 import os
 import json
 from codecs import open
 
-from stvpoll import STVPollBase
+from stvpoll.abcs import STVPoll
 from stvpoll.scottish_stv import ScottishSTV
 from stvpoll.cpo_stv import CPO_STV
 from typing import Type
@@ -20,13 +17,14 @@ def _opa_example_fixture(factory):
     2 voters ranked Don first
     1 voter ranked Eric first
     """
-    obj = factory(seats=3, candidates=['Alice', 'Bob', 'Chris', 'Don', 'Eric'])
+    obj = factory(seats=3, proposals=['Alice', 'Bob', 'Chris', 'Don', 'Eric'])
     obj.add_ballot(['Alice', 'Bob', 'Chris'], 28)
     obj.add_ballot(['Bob', 'Alice', 'Chris'], 26)
     obj.add_ballot(['Chris'], 3)
     obj.add_ballot(['Don'], 2)
     obj.add_ballot(['Eric'], 1)
     return obj
+
 
 def _wikipedia_example_fixture(factory):
     """
@@ -40,7 +38,8 @@ def _wikipedia_example_fixture(factory):
         (('strawberry',), 1),
         (('bonbon',), 1),
     )
-    obj = factory(seats=3, candidates=('orange', 'chocolate', 'pear', 'strawberry', 'bonbon'))
+    obj = factory(seats=3, proposals=('orange', 'chocolate', 'pear', 'strawberry', 'bonbon'))
+    obj.testing = True
     for b in example_ballots:
         obj.add_ballot(*b)
     return obj
@@ -59,14 +58,14 @@ def _wikipedia_cpo_example_fixture(factory):
         (('Delilah', 'Scott'), 5),
         (('Scott', 'Delilah'), 21),
     )
-    obj = factory(seats=3, candidates=example_candidates)
+    obj = factory(seats=3, proposals=example_candidates)
     for b in example_ballots:
         obj.add_ballot(*b)
     return obj
 
 
 def _CPO_extreme_tie_fixture(factory):
-    # type: (Type[STVPollBase]) -> STVPollBase
+    # type: (Type[STVPoll]) -> STVPoll
     """
     Example from https://en.wikipedia.org/wiki/CPO-STV
     """
@@ -77,14 +76,14 @@ def _CPO_extreme_tie_fixture(factory):
         (('Batman', 'Robin', 'Andrea'), 1),
         (('Gorm',), 2),
     )
-    obj = factory(seats=2, candidates=example_candidates)
+    obj = factory(seats=2, proposals=example_candidates)
     for b in example_ballots:
         obj.add_ballot(*b)
     return obj
 
 
 def _scottish_tiebreak_history_fixture(factory):
-    # type: (Type[STVPollBase]) -> STVPollBase
+    # type: (Type[STVPoll]) -> STVPoll
     """
     Example from https://en.wikipedia.org/wiki/CPO-STV
     """
@@ -95,14 +94,14 @@ def _scottish_tiebreak_history_fixture(factory):
         (('Gorm', 'Robin'), 1),
         ((), 3),
     )
-    obj = factory(seats=1, candidates=example_candidates, quota=lambda x: 100)
+    obj = factory(seats=1, proposals=example_candidates, quota=lambda x: 100)
     for b in example_ballots:
         obj.add_ballot(*b)
     return obj
 
 
 def _incomplete_result_fixture(factory):
-    # type: (Type[STVPollBase]) -> STVPollBase
+    # type: (Type[STVPoll]) -> STVPoll
     """
     Example from https://en.wikipedia.org/wiki/CPO-STV
     """
@@ -111,7 +110,7 @@ def _incomplete_result_fixture(factory):
         (('Batman',), 1),
         (('Gorm',), 2),
     )
-    obj = factory(seats=3, candidates=example_candidates, random_in_tiebreaks=False)
+    obj = factory(seats=3, proposals=example_candidates, random_in_tiebreaks=False)
     for b in example_ballots:
         obj.add_ballot(*b)
     return obj
@@ -120,7 +119,7 @@ def _incomplete_result_fixture(factory):
 def _big_fixture(factory, candidates, seats):
     with open('stvpoll/testdata/70 in 35.json') as infile:
         votedata = json.load(infile)
-    obj = factory(candidates=votedata['candidates'][:candidates], seats=seats)
+    obj = factory(proposals=votedata['candidates'][:candidates], seats=seats)
     for b in votedata['ballots']:
         obj.add_ballot(b, 1)
     return obj
@@ -133,7 +132,7 @@ def _tie_break_that_breaks(factory):
         ([u'A', u'D',u'C'], 1),
         ([u'E', u'C', u'A', u'B'], 1),
     )
-    obj = factory(seats=3, candidates=example_candidates, random_in_tiebreaks=True)
+    obj = factory(seats=3, proposals=example_candidates, random_in_tiebreaks=True)
     for b in example_ballots:
         obj.add_ballot(*b)
     return obj
@@ -147,14 +146,14 @@ class STVPollBaseTests(unittest.TestCase):
         return ScottishSTV
 
     def test_ballot_count(self):
-        obj = self._cut(seats=0, candidates=('a', 'b'))
+        obj = self._cut(seats=0, proposals=('a', 'b'))
         obj.add_ballot(['a', 'b'], 5)
         obj.add_ballot(['a'], 3)
         obj.add_ballot(['b'], 8)
         self.assertEqual(obj.ballot_count, 16)
 
     def test_add_ballot(self):
-        obj = self._cut(seats=0, candidates=('a', 'b'))
+        obj = self._cut(seats=0, proposals=('a', 'b'))
         obj.add_ballot(['a', 'b'])
         obj.add_ballot(['a', 'b'])
         obj.add_ballot(['a', 'b'])
@@ -170,8 +169,7 @@ class ScottishSTVTests(unittest.TestCase):
     wiki_cpo_results = {'Carter', 'Scott', 'Andrea'}
 
     @property
-    def _cut(self):
-        # type: () -> Type[ScottishSTV]
+    def _cut(self) -> Type[ScottishSTV]:
         return ScottishSTV
 
     def test_opa_example(self):
@@ -190,74 +188,67 @@ class ScottishSTVTests(unittest.TestCase):
         obj = _wikipedia_cpo_example_fixture(self._cut)
         result = obj.calculate()
         self.assertEqual(result.elected_as_set(), self.wiki_cpo_results)
-        self.assertEqual(result.as_dict()['randomized'], False)
+        self.assertIs(result.as_dict()['randomized'], False)
 
     def test_tiebreak_randomized(self):
         obj = _CPO_extreme_tie_fixture(self._cut)
         result = obj.calculate()
-        self.assertEqual(result.as_dict()['randomized'], True)
-        self.assertEqual(result.as_dict()['complete'], True)
+        self.assertIs(result.as_dict()['randomized'], True)
+        self.assertIs(result.as_dict()['complete'], True)
         self.assertEqual(result.as_dict()['empty_ballot_count'], 0)
 
     def test_scottish_tiebreak_history(self):
         obj = _scottish_tiebreak_history_fixture(self._cut)
-        result = obj.calculate()
-        try:
-            self.assertEqual(result.as_dict()['randomized'], not isinstance(obj, ScottishSTV))
-            self.assertEqual(result.as_dict()['complete'], True)
-            self.assertEqual(result.as_dict()['empty_ballot_count'], 3)
-        except AttributeError:
-            import pdb; pdb.set_trace()
+        result = obj.calculate().as_dict()
+        self.assertIs(result['randomized'], not isinstance(obj, ScottishSTV))
+        self.assertIs(result['complete'], True)
+        self.assertEqual(result['empty_ballot_count'], 3)
 
     def test_incomplete_result(self):
         obj = _incomplete_result_fixture(self._cut)
         result = obj.calculate()
-        self.assertEqual(result.as_dict()['randomized'], False)
-        self.assertEqual(result.as_dict()['complete'], False)
+        self.assertIs(result.as_dict()['randomized'], False)
+        self.assertIs(result.as_dict()['complete'], False)
 
     def test_tie_break_that_breaks(self):
         obj = _tie_break_that_breaks(self._cut)
         result = obj.calculate()
-        self.assertEqual(result.as_dict()['randomized'], True)
-        self.assertEqual(result.as_dict()['complete'], True)
-        self.assertEqual(obj.complete, True)
+        self.assertIs(result.as_dict()['randomized'], True)
+        self.assertIs(result.as_dict()['complete'], True)
+        self.assertIs(obj.is_complete, True)
 
     def test_multiple_quota_tiebreak(self):
-        poll = self._cut(seats=4, candidates=['one', 'two', 'three', 'four', 'five', 'six'])
+        poll = self._cut(seats=4, proposals=['one', 'two', 'three', 'four', 'five', 'six'])
         poll.add_ballot(['one', 'three'])
         poll.add_ballot(['two', 'four'])
         poll.add_ballot(['five', 'six'])
         result = poll.calculate()
-        self.assertTrue(result.complete)
+        self.assertTrue(result.is_complete)
 
     def test_exceptions(self):
         from stvpoll.exceptions import STVException
-        from stvpoll.exceptions import CandidateDoesNotExist
         with self.assertRaises(STVException):
-            self._cut(seats=3, candidates=['one', 'two'])
-        with self.assertRaises(CandidateDoesNotExist):
-            obj = self._cut(seats=3, candidates=['one', 'two', 'three'])
-            obj.add_ballot(['one', 'four'])
+            self._cut(seats=3, proposals=['one', 'two'])
 
     def test_randomization_disabled(self):
-        poll = self._cut(seats=2, candidates=['one', 'two', 'three'], random_in_tiebreaks=False, pedantic_order=True)
+        poll = self._cut(seats=2, proposals=['one', 'two', 'three'], random_in_tiebreaks=False, pedantic_order=True)
         poll.add_ballot(['one', 'two'], 2)
         poll.add_ballot(['two', 'one'], 2)
         poll.add_ballot(['three'], 1)
         result = poll.calculate()
-        self.assertEqual(result.complete, not isinstance(poll, ScottishSTV))
+        self.assertIs(result.is_complete, not isinstance(poll, ScottishSTV))
 
     def test_pedantic_order(self):
-        poll = self._cut(seats=2, candidates=['one', 'two', 'three'], random_in_tiebreaks=False)
+        poll = self._cut(seats=2, proposals=['one', 'two', 'three'], random_in_tiebreaks=False)
         poll.add_ballot(['one', 'two'], 2)
         poll.add_ballot(['two', 'one'], 2)
         poll.add_ballot(['three'], 1)
         result = poll.calculate()
-        self.assertEqual(result.complete, True)
+        self.assertEqual(result.is_complete, True)
 
     def test_bad_config(self):
         from stvpoll.exceptions import STVException
-        self.assertRaises(STVException, self._cut, seats=4, candidates=['one', 'two', 'three'])
+        self.assertRaises(STVException, self._cut, seats=4, proposals=['one', 'two', 'three'])
 
 
 class CPOSTVTests(ScottishSTVTests):
@@ -268,9 +259,9 @@ class CPOSTVTests(ScottishSTVTests):
         return CPO_STV
 
     def test_all_wins(self):
-        poll = self._cut(seats=2, candidates=['one', 'two'])
+        poll = self._cut(seats=2, proposals=['one', 'two'])
         poll.calculate()
-        self.assertIs(poll.complete, True)
+        self.assertIs(poll.is_complete, True)
 
     def test_possible_combinations(self):
         self.assertEqual(CPO_STV.possible_combinations(5, 2), 10)
@@ -299,7 +290,7 @@ class ScottishElectionTests(unittest.TestCase):
 
     @property
     def _cut(self):
-        # type: () -> Type[STVPollBase]
+        # type: () -> Type[STVPoll]
         return ScottishSTV
 
     def test_all(self):
@@ -308,7 +299,7 @@ class ScottishElectionTests(unittest.TestCase):
             ballots = []
             candidates = []
             with open(election_dir + f) as edata:
-                standing, winners = map(int, edata.readline().strip().split(' '))
+                standing, winners = map(int, edata.readline().strip().split())
                 while True:
                     line = edata.readline().strip().split(' ')
                     if line[0] == '0':

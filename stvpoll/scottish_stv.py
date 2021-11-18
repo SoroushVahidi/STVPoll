@@ -1,52 +1,45 @@
-# -*- coding: utf-8 -*-
-from __future__ import unicode_literals
-
 from decimal import Decimal
 
-from stvpoll import STVPollBase
-from stvpoll import Candidate
-from stvpoll import ElectionRound
+from stvpoll.abcs import STVPoll
 from stvpoll.quotas import droop_quota
+from stvpoll.utils import SelectionMethod, Proposal
 
 
-class ScottishSTV(STVPollBase):
+class ScottishSTV(STVPoll):
 
-    def __init__(self, seats, candidates, quota=droop_quota, random_in_tiebreaks=True, pedantic_order=False):
-        super(ScottishSTV, self).__init__(seats, candidates, quota, random_in_tiebreaks, pedantic_order)
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault('quota', droop_quota)
+        super().__init__(*args, **kwargs)
 
     @staticmethod
-    def round(value):
-        # type: (Decimal) -> Decimal
+    def round(value: Decimal) -> Decimal:
         return round(value, 5)
 
-    def calculate_round(self):
-        # type: () -> None
+    def get_transfer_quota(self, proposal: Proposal) -> Decimal:
+        votes = self.get_votes(proposal)
+        return (votes - self.quota) / votes
 
+    def calculate_round(self) -> None:
         # First, declare winners if any are over quota
-        winners = [c for c in self.standing_candidates if c.votes >= self.quota]
-        if winners:
-            self.select_multiple(
-                winners,
-                ElectionRound.SELECTION_METHOD_DIRECT,
+        above_quota = self.standing_above_quota
+        if above_quota:
+            self.elect_multiple(
+                above_quota,
+                SelectionMethod.Direct,
+            )
+            # If there there are winner votes to transfer, then do that.
+            return self.transfer_votes(
+                {p: self.get_transfer_quota(p) for p in above_quota}
             )
 
-        # If there there are winner votes to transfer, then do that.
-        transfers = [c for c in self.result.elected if not c.votes_transferred]
-        if transfers:
-            # Select candidates in order. Resolve ties.
-            candidate, _method = self.get_candidate(sample=transfers)
-            transfer_quota = ScottishSTV.round((candidate.votes - self.quota) / candidate.votes)
-            self.transfer_votes(candidate, transfer_quota=transfer_quota)
-
         # In case of vote exhaustion, this is theoretically possible.
-        elif self.seats_to_fill == len(self.standing_candidates):
-            self.select_multiple(
-                self.standing_candidates,
-                ElectionRound.SELECTION_METHOD_NO_COMPETITION,
+        if self.seats_to_fill == len(self.standing_proposals):
+            return self.elect_multiple(
+                self.standing_proposals,
+                SelectionMethod.NoCompetition,
             )
 
         # Else exclude a candidate
-        else:
-            candidate, method = self.get_candidate(most_votes=False)
-            self.select(candidate, method, Candidate.EXCLUDED)
-            self.transfer_votes(candidate)
+        proposal, method = self.get_proposal(most_votes=False)
+        self.exclude(proposal, method)
+        self.transfer_votes({proposal: Decimal(1)})
