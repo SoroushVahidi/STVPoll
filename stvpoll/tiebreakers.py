@@ -1,3 +1,4 @@
+from functools import cached_property
 from random import shuffle, sample
 
 from stvpoll.abcs import Tiebreaker, STVPoll
@@ -9,17 +10,14 @@ class RandomListTiebreaker(Tiebreaker):
     Resolve ties by using a pre-shuffled list
     """
     selection_method = SelectionMethod.Random
-    _random_list: list[Proposal] = None
 
     def __init__(self, poll: STVPoll) -> None:
         super().__init__(poll)
         self.result_randomized(False)
 
-    @property
+    @cached_property
     def random_list(self) -> list[Proposal]:
-        if self._random_list is None:
-            self._random_list = sample(self.poll.proposals, len(self.poll.proposals))
-        return self._random_list
+        return sample(self.poll.proposals, len(self.poll.proposals))
 
     def result_randomized(self, value: bool = True):
         extra_data = self.poll.result.extra_data
