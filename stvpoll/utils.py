@@ -96,18 +96,6 @@ class SelectionMethod(str, Enum):
 
 
 class ElectionRound:
-    # SELECTION_METHOD_DIRECT = 0
-    # SELECTION_METHOD_HISTORY = 1
-    # SELECTION_METHOD_RANDOM = 2
-    # SELECTION_METHOD_NO_COMPETITION = 3
-    # SELECTION_METHOD_CPO = 4
-    # SELECTION_METHODS = (
-    #     'Direct',
-    #     'Tiebreak (history)',
-    #     'Tiebreak (Random)',
-    #     'No competition left',
-    #     'Comparison of Pairs of Outcomes',
-    # )
     status: ProposalStatus = None
     selection_method: SelectionMethod = None
 
@@ -160,6 +148,7 @@ class ElectionResult:
         self.elected: list[Proposal] = []
         self.start_time = time()
         self.transfer_log: list[TransferLogItem] = []
+        self.extra_data = {}        # Can be populated by for example tiebreakers
 
     def __repr__(self) -> str:  # pragma: no coverage
         return f'<ElectionResult in {len(self.rounds)} round(s): {", ".join(map(str, self.elected))}>'
@@ -202,8 +191,8 @@ class ElectionResult:
             'proposals': tuple(self.poll.proposals),
             'complete': self.is_complete,
             'rounds': tuple(r.as_dict() for r in self.rounds),
-            'randomized': self.randomized,
             'quota': self.poll.quota,
             'runtime': self.runtime,
             'empty_ballot_count': self.empty_ballot_count,
+            **self.extra_data,
         }

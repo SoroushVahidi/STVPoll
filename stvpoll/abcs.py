@@ -5,37 +5,59 @@ import random
 from contextlib import suppress
 from copy import deepcopy
 from decimal import Decimal
-from typing import Iterable, Counter, Callable
+from typing import Iterable, Counter, Callable, Optional, Type
 
 from .exceptions import STVException, IncompleteResult
-from .utils import Proposal, PreferenceBallot, ElectionResult, minmax, Votes, SelectionMethod, ProposalStatus
+from .utils import Proposal, PreferenceBallot, ElectionResult, minmax, Votes, SelectionMethod
 
 Quota = Callable[['STVPoll'], int]
 
 
-class STVPoll(ABC):
-    _quota: int = None
-    ballots: list[PreferenceBallot]
+class Tiebreaker(ABC):
+    """ Tiebreaker classes are strategies to resolve ties between proposals """
+    @property
+    @abstractmethod
+    def selection_method(self) -> SelectionMethod:
+        ...
 
-    def __init__(self,
+    def __init__(self, poll: STVPoll) -> None:
+        self.poll = poll
+
+    @abstractmethod
+    def __call__(self, ties: list[Proposal], most_votes: bool = True) -> list[Proposal]:
+        """
+        Resolve ties, to whatever accuracy possible.
+        Return any amount, from one to all supplied proposals.
+        """
+
+
+class STVPoll(ABC):
+    multiple_winners = True
+    _quota: int = None
+
+    def __init__(self, *,
                  seats: int,
                  proposals: Iterable[Proposal],
                  quota: Quota = None,
-                 random_in_tiebreaks: bool = True,
-                 pedantic_order: bool = False,
+                 tiebreakers: Iterable[Type[Tiebreaker]] = None,
+                 pedantic_order: bool = False,       # Uses tiebreaks to decide order is elect_multiple
                  ) -> None:
         self.proposals = list(proposals)
+        if len(self.proposals) < seats:
+            raise STVException('Not enough candidates to fill seats')
+
         random.shuffle(self.proposals)
-        self.votes: Votes = {p: 0 for p in self.proposals}
-        self.excluded = list[Proposal]()
-        self.ballots = []
+
         self._quota_function = quota
         self.seats = seats
-        self.random_in_tiebreaks = random_in_tiebreaks
         self.pedantic_order = pedantic_order
+
+        self.votes: Votes = {p: Decimal(0) for p in self.proposals}
+        self.excluded: list[Proposal] = []
+        self.ballots: list[PreferenceBallot] = []
+        self.votes_transferred: set[Proposal] = set()
         self.result = ElectionResult(self)
-        if len(self.proposals) < self.seats:
-            raise STVException('Not enough candidates to fill seats')
+        self.tiebreakers = [] if tiebreakers is None else [t(self) for t in tiebreakers]
 
     @property
     def quota(self) -> int:
@@ -66,36 +88,29 @@ class STVPoll(ABC):
             return self.resolve_tie(ties, most_votes)
         return proposal, SelectionMethod.Direct
 
-    def choice(self, proposals: list[Proposal]) -> Proposal:
-        if self.random_in_tiebreaks:
-            self.result.randomized = True
-            return random.choice(proposals)
-        raise IncompleteResult('Unresolved tiebreak (random disallowed)')
+    def resolve_tie(self, ties: list[Proposal], most_votes: bool = True) -> tuple[Proposal, SelectionMethod]:
+        """
+        Loops through available tiebreakers until there is exactly one proposal,
+        or results in incomplete result for poll.
+        """
+        for tiebreaker in self.tiebreakers:
+            ties = tiebreaker(ties, most_votes)
+            if len(ties) == 1:
+                return ties[0], tiebreaker.selection_method
+        raise IncompleteResult('Could not resolve tie')
 
-    def resolve_tie(self, proposals: list[Proposal], most_votes: bool = True) -> tuple[Proposal, SelectionMethod]:
-        for stage in self.result.transfer_log[::-1]:
-            stage_votes = stage['current_votes']
-            primary_candidate = minmax(proposals, key=lambda p: stage_votes[p], high=most_votes)
-            ties = self.get_ties(primary_candidate, proposals, stage_votes)
-            if ties:
-                proposals = ties
-            else:
-                return primary_candidate, SelectionMethod.History
-        return self.choice(proposals), SelectionMethod.Random
-
-    def transfer_votes(self, prop_quotas: dict[Proposal, Decimal]) -> None:
+    def transfer_votes(self, proposal: Proposal, fraction: Decimal = Decimal(1)) -> None:
         transfers = Counter[tuple[Proposal, Proposal]]()
         for ballot in self.ballots:
-            proposal = ballot.current_preference
-            if proposal in prop_quotas:
-                ballot.decrease_value(prop_quotas[proposal])
+            if proposal == ballot.current_preference:
+                ballot.decrease_value(fraction)
                 if target_proposal := ballot.get_transfer_preference(self.standing_proposals):
                     self.votes[target_proposal] += ballot.value
                     transfers[(proposal, target_proposal)] += ballot.value
                 else:
                     self.result.exhausted += ballot.value
-        for proposal in prop_quotas:
-            self.votes.pop(proposal)
+        self.votes.pop(proposal)                     # Remove from future vote counts
+        self.votes_transferred.add(proposal)         # Mark as transferred
 
         self.result.transfer_log.append({
             'transfers': transfers,
@@ -114,9 +129,14 @@ class STVPoll(ABC):
             'exhausted_votes': self.result.exhausted,
         })
 
-    def get_ties(self, proposal: Proposal, sample: list[Proposal] = None, votes: Votes = None) -> list[Proposal]:
-        # Use current votes is none supplied
+    def get_ties(self,
+                 proposal: Proposal,
+                 sample: list[Proposal] = None,
+                 votes: Votes = None
+                 ) -> Optional[list[Proposal]]:
+        """ Get all proposals that are tied in amount of votes. """
         if votes is None:
+            # Default to current votes
             votes = self.votes
         proposal_votes = votes[proposal]
         if sample is None:
@@ -128,6 +148,11 @@ class STVPoll(ABC):
     @property
     def standing_proposals(self) -> list[Proposal]:
         return [p for p in self.proposals if p not in self.excluded and p not in self.result.elected]
+
+    def get_transferable_proposals(self) -> list[Proposal]:
+        """ Winning proposals that has not yet gotten it's votes transferred """
+        standing = self.standing_proposals
+        return [p for p in self.proposals if p not in standing and p not in self.votes_transferred]
 
     @property
     def standing_above_quota(self) -> list[Proposal]:
@@ -175,15 +200,20 @@ class STVPoll(ABC):
         self.result.exclude(proposal, method)
 
     def calculate(self) -> ElectionResult:
-        # if not self.ballots:  # pragma: no coverage
-        #     raise STVException('No ballots registered.')
+        """ Sets initial votes and calculates a result """
         self.initial_votes()
         with suppress(IncompleteResult):
-            self.do_rounds()
+            self.perform_calculation()
         self.result.finish()
         return self.result
 
-    def do_rounds(self) -> None:
+    @abstractmethod
+    def perform_calculation(self) -> None:
+        """ Implement is subclasses to calculate a result. """
+
+
+class STVRoundsPoll(STVPoll):
+    def perform_calculation(self) -> None:
         while self.seats_to_fill:
             self.calculate_round()
 

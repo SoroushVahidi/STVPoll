@@ -1,44 +1,45 @@
+from __future__ import annotations
+
 from decimal import Decimal
 from itertools import combinations
 from math import factorial
+from random import choice
 
 from typing import Iterable, DefaultDict
 
 from stvpoll.abcs import STVPoll
+from stvpoll.exceptions import IncompleteResult
 from stvpoll.quotas import hagenbach_bischof_quota
 from stvpoll.utils import Proposal, SelectionMethod
 
 
 class CPOComparisonPoll(STVPoll):
-    def __init__(self,
-                 *args,
-                 winners=(),
-                 compared=(),
+    def __init__(self, *,
+                 winners: set,
+                 compared: set,
                  **kwargs
                  ) -> None:
         kwargs.setdefault('quota', hagenbach_bischof_quota)
-        super().__init__(*args, **kwargs)
+        super().__init__(**kwargs)
         self.compared = compared
         self.winners = winners
         self.below_quota = False
 
-    def get_transfer_quota(self, proposal: Proposal) -> Decimal:
+    def get_transfer_fraction(self, proposal: Proposal) -> Decimal:
         votes = self.get_votes(proposal)
         return (votes - self.quota) / votes
 
-    def do_rounds(self) -> None:
+    def perform_calculation(self) -> None:
+        """ CPO rounds work differently than other STV methods """
         for exclude in set(self.standing_proposals).difference(self.winners):
             self.exclude(exclude, SelectionMethod.Direct)
-            self.transfer_votes({exclude: Decimal(1)})
+            self.transfer_votes(exclude)
 
         elect = list(set(self.standing_proposals).difference(self.compared))
         self.elect_multiple(elect, SelectionMethod.Direct)
-        self.transfer_votes({p: self.get_transfer_quota(p) for p in elect})
-        for p in elect:
-            self.votes[p] = Decimal(self.quota)
-
-    def calculate_round(self) -> None:
-        """ Not in use here """
+        for prop in elect:
+            self.transfer_votes(prop, self.get_transfer_fraction(prop))
+            self.votes[prop] = Decimal(self.quota)
 
     @property
     def not_excluded(self) -> list[Proposal]:
@@ -71,12 +72,13 @@ class CPOComparisonResult:
 
 
 class CPO_STV(STVPoll):
-    def __init__(self,
-                 *args, **kwargs
-                 ) -> None:
+    def __init__(self, **kwargs) -> None:
         kwargs.setdefault('quota', hagenbach_bischof_quota)
         kwargs['pedantic_order'] = False
-        super().__init__(*args, **kwargs)
+        self.random_in_tiebreaks = kwargs.pop('random_in_tiebreaks', True)
+        super().__init__(**kwargs)
+        if self.random_in_tiebreaks:
+            self.result.extra_data['randomized'] = False
 
     @staticmethod
     def possible_combinations(proposals: int, winners: int) -> int:
@@ -94,8 +96,8 @@ class CPO_STV(STVPoll):
             winners = set(compared)
             winners.update(self.result.elected)
             comparison_poll = CPOComparisonPoll(
-                self.seats,
-                self.proposals,
+                seats=self.seats,
+                proposals=self.proposals,
                 winners=winners,
                 compared=compared)
 
@@ -128,6 +130,12 @@ class CPO_STV(STVPoll):
             return undefeated.pop()
         # No clear winner
         return []
+
+    def choice(self, ties: list[tuple[Proposal]]):
+        if not self.random_in_tiebreaks:
+            raise IncompleteResult('Could not resolve ties')
+        self.result.extra_data['randomized'] = True
+        return choice(ties)
 
     def resolve_tie_minimax(self, duels: list[CPOComparisonResult]) -> tuple[Proposal]:
         from tarjan import tarjan
@@ -195,7 +203,7 @@ class CPO_STV(STVPoll):
     #
     #     return self.get_duels_winner(noncircular_duels)
 
-    def do_rounds(self) -> None:
+    def perform_calculation(self) -> None:
         if len(self.proposals) == self.seats:
             self.elect_multiple(
                 self.proposals,
@@ -209,6 +217,3 @@ class CPO_STV(STVPoll):
         self.elect_multiple(
             self.get_best_approval(),
             SelectionMethod.CPO)
-
-    def calculate_round(self) -> None:
-        """ Not in use here """
