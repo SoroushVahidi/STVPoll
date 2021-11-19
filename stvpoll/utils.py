@@ -135,9 +135,9 @@ class ElectionRound:
 
     def as_dict(self) -> dict:
         return {
-            'status': self.status,
+            'status': self.status.value,
             'selected': tuple(self.selected),
-            'method': self.selection_method,
+            'method': self.selection_method.value,
             'vote_count': tuple(self.votes.items()),
         }
 
@@ -175,11 +175,6 @@ class ElectionResult:
     @property
     def current_round(self) -> ElectionRound:
         return self.rounds[-1]
-
-    # def _set_candidate_status(self, proposal: Proposal, status: int):
-    #     candidate.status = status
-    #     if status == Candidate.ELECTED:
-    #         self.elected.append(candidate)
 
     def elect(self, proposals: Union[Proposal, list[Proposal]], method: SelectionMethod) -> None:
         if isinstance(proposals, list):
