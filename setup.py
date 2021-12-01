@@ -9,7 +9,6 @@ with open(os.path.join(here, 'CHANGES.rst')) as f:
     CHANGES = f.read()
 
 requires = (
-    'typing',
     'tarjan',
 )
 
