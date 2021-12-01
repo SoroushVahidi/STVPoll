@@ -1,5 +1,5 @@
 from decimal import Decimal
-from math import floor
+from math import floor, ceil
 
 from stvpoll.abcs import STVRoundsPoll
 from stvpoll.exceptions import IncompleteResult

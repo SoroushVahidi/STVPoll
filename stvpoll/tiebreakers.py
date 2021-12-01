@@ -1,5 +1,5 @@
 from functools import cached_property
-from random import shuffle, sample
+from random import sample
 
 from stvpoll.abcs import Tiebreaker, STVPoll
 from stvpoll.utils import Proposal, minmax, SelectionMethod

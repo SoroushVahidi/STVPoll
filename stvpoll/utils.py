@@ -21,33 +21,6 @@ def minmax(items: Iterable, key: Callable[[Proposal], Decimal] = None, high: boo
     return min(items, key=key)
 
 
-# class Candidate:
-#     EXCLUDED = 0
-#     HOPEFUL = 1
-#     ELECTED = 2
-#     status = HOPEFUL
-#     votes = Decimal(0)
-#     votes_transferred = False
-#
-#     def __init__(self, obj: Proposal) -> None:
-#         self.obj = obj
-#
-#     def __repr__(self) -> str:  # pragma: no coverage
-#         return '<Candidate: {}>'.format(str(self.obj))
-#
-#     @property
-#     def standing(self):
-#         return self.status == self.HOPEFUL
-#
-#     def __eq__(self, o: Candidate) -> bool:
-#         if isinstance(o, Candidate):
-#             return self.obj == o.obj
-#         return self.obj == o
-#
-#     def __hash__(self) -> int:
-#         return hash(self.obj)
-
-
 class PreferenceBallot:
     def __init__(self, preferences: list[Proposal], count: int) -> None:
         self.preferences = preferences
