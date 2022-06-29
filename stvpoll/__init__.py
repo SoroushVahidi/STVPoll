@@ -300,6 +300,9 @@ class STVPollBase(object):
                 winner = candidates[candidates.index(primary_candidate)]  # Get correct Candidate instance
                 return winner, ElectionRound.SELECTION_METHOD_HISTORY
         return self.choice(candidates), ElectionRound.SELECTION_METHOD_RANDOM
+    class NoHistoryScottishSTV(ScottishSTV):
+        def resolve_tie(self, candidates, most_votes=True):
+            return self.choice(candidates), ElectionRound.SELECTION_METHOD_RANDOM
 
     def transfer_votes(self, candidate, transfer_quota=Decimal(1)):
         # type: (Candidate, Decimal) -> None
